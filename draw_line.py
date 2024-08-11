@@ -1,88 +1,61 @@
-#!/usr/bin/env python3
-
-import rclpy
-from rclpy.node import Node
-
-import numpy as np
 import cv2
+import numpy as np
 
-from sensor_msgs.msg import Image
-from cv_bridge import CvBridge, CvBridgeError
-from geometry_msgs.msg import Twist
-from simple_pid import PID
-from ultralytics import YOLO  # YOLOv8 kütüphanesi ekleniyor
+# Görüntüyü yükle (siyah-beyaz yol şeritlerini içeren görsel)
+img = cv2.imread('/mnt/data/deneme_screenshot_11.08.2024.png', 0)
 
+# Kenar tespiti yap (Canny Edge Detection)
+edges = cv2.Canny(img, 50, 150, apertureSize=3)
 
-class CameraAndControlNode(Node):
-    def __init__(self):
-        super().__init__("camera_n_control")
-        
-        self.model = YOLO("/home/merts/ros2_ws/src/simulasyon_2024/scripts/lane.pt")  # YOLOv8 modelinin yüklenmesi
-        print(f"YOLOv8 modeli yüklendi")
-        
-        self.subscriber_ = self.create_subscription(Image,
-                                                    "/zed_cam/camera_sensor/left/image_raw",
-                                                    self.callback_camera_n_control,
-                                                    10)
-        
-        self.msg = Twist()
-        self.publisher_ = self.create_publisher(Twist, "/cmd_vel", 10)
-        self.bridge = CvBridge()
-        self.get_logger().info("Control from camera has started.")
-        
-        # PID kontrolörünün ayarlanması
-        self.pid = PID(0.1, 0.01, 0.05, setpoint=0)
-        self.pid.sample_time = 0.1  # PID güncelleme süresi
-        self.pid.output_limits = (-1.0, 1.0)  # Çıkış sınırları
+# Hough Çizgi Dönüşümü kullanarak çizgileri tespit et
+lines = cv2.HoughLines(edges, 1, np.pi / 180, 200)
 
-    def callback_camera_n_control(self, msg):
-        try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
-        except CvBridgeError as e:
-            print(e)
-        
-        # YOLOv8 ile tahmin
-        results = self.model(cv_image)
-        boxes = results[0].boxes.xyxy  # Tahmin edilen kutuların alınması
-        
-        if len(boxes) > 0:
-            # Kutular arasında sol ve sağ şerit kutularını tespit etme
-            left_lane = None
-            right_lane = None
-            
-            for box in boxes:
-                x1, y1, x2, y2 = box
-                center_x = (x1 + x2) / 2
-                
-                if center_x < cv_image.shape[1] / 2:
-                    left_lane = center_x if left_lane is None else min(left_lane, center_x)
-                else:
-                    right_lane = center_x if right_lane is None else max(right_lane, center_x)
-            
-            if left_lane is not None and right_lane is not None:
-                center_img = cv_image.shape[1] // 2
-                midpoint = (left_lane + right_lane) // 2
-                error = center_img - midpoint
+# Görüntüdeki merkez noktayı belirle
+img_center = img.shape[1] / 2
 
-                # PID kontrol
-                control = float(self.pid(error))  # PID kontrol çıktısını float'a dönüştür
+# Tespit edilen çizgileri depolamak için listeler
+left_lines = []
+right_lines = []
 
-                
-                # Direksiyon açısını terminale yazdırma
-                print(f"Steering Angle: {control}")
-                self.msg.angular.z = control
-                self.msg.linear.x = 1.0
-                self.publisher_.publish(self.msg)
-        
-        cv2.imshow("img", cv_image)
-        key = cv2.waitKey(1)
+if lines is not None:
+    for line in lines:
+        rho, theta = line[0]
+        a = np.cos(theta)
+        b = np.sin(theta)
+        x0 = a * rho
+        y0 = b * rho
+        x1 = int(x0 + 1000 * (-b))
+        y1 = int(y0 + 1000 * (a))
+        x2 = int(x0 - 1000 * (-b))
+        y2 = int(y0 - 1000 * (a))
 
-def main(args=None):
-    rclpy.init(args=args)
-    node = CameraAndControlNode()
-    rclpy.spin(node)
-    rclpy.shutdown()
+        # Çizgiyi görselleştirme (kırmızı renk)
+        cv2.line(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
-if __name__ == "__main__":
-    main()
+        # Çizgileri sola ve sağa göre ayırma
+        if x0 < img_center:
+            left_lines.append((x1, y1, x2, y2))
+        else:
+            right_lines.append((x1, y1, x2, y2))
 
+# Ortalama sapmayı hesapla (basit bir ortalama ile)
+left_avg_x = np.mean([line[0] for line in left_lines]) if left_lines else img_center
+right_avg_x = np.mean([line[0] for line in right_lines]) if right_lines else img_center
+
+# Yolun merkezini hesapla
+lane_center = (left_avg_x + right_avg_x) / 2
+
+# Sapmayı hesapla (araç merkezine göre)
+deviation = lane_center - img_center
+
+# Direksiyon açısını hesapla (basit oransal kontrol)
+k_p = 0.1  # Oransal kazanç değeri
+steering_angle = k_p * deviation
+
+# Sonuçları göster
+cv2.imshow('Detected Lines', img)
+print(f"Deviation: {deviation}")
+print(f"Steering Angle: {steering_angle}")
+
+cv2.waitKey(0)
+cv2.destroyAllWindows()
