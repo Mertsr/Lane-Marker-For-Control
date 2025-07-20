@@ -93,13 +93,6 @@ python3 lane_following_pid.py
 
 ---
 
-## Katkı & Lisans
-
-Katkıda bulunmak için fork'layın ve pull request açın.  
-Lisans: [Belirtilmemiş]
-
----
-
 ## İletişim
 
 Proje sahibi: [Mertsr](https://github.com/Mertsr)
